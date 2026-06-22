@@ -84,6 +84,11 @@ app.post('/api/notifications/force-check', async (_req, res) => {
   res.json({ success: true, updates: results });
 });
 
+app.get('/api/notifications/diagnostics', (_req, res) => {
+  const notificationManager = getNotificationManager();
+  res.json(notificationManager.getDiagnostics());
+});
+
 app.get('*', (_req, res) => {
   const indexPath = path.join(clientDistDir, 'index.html');
   const fallbackPath = path.join(__dirname, 'public', 'fallback.html');

@@ -1,5 +1,6 @@
 import { config } from '../../config';
 import { NotificationStorage } from './storage';
+import type { LoadRecoveryInfo, StorageDiagnostics } from './storage';
 import { MAX_NOTIFICATIONS, type NotificationListResult } from './types';
 import { getWebSocketServer } from '../websocket';
 import type { Notification, PackageUpdateData } from '../../types';
@@ -131,6 +132,16 @@ export class NotificationManager {
 
   close(): void {
     this.storage.close();
+  }
+
+  /** Information about how the DB was loaded (backup recovery, etc.). */
+  getRecoveryInfo(): LoadRecoveryInfo {
+    return this.storage.getRecoveryInfo();
+  }
+
+  /** Full diagnostics: recovery info + backup listing + last-persist state. */
+  getDiagnostics(): StorageDiagnostics {
+    return this.storage.getDiagnostics();
   }
 }
 
