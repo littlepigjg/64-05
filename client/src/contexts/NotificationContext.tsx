@@ -1,6 +1,7 @@
-import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useRef, useMemo, type ReactNode } from 'react';
 import { getWebSocketService, initWebSocketService } from '../services/websocket';
 import { api } from '../api';
+import { mergeNotifications, appendUnique } from '../utils/notifications';
 import type { Notification, NotificationListResponse, NotificationSettings } from '../types';
 
 interface NotificationContextType {
@@ -25,7 +26,6 @@ const NotificationContext = createContext<NotificationContextType | null>(null);
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected' | 'reconnecting'>('disconnected');
   const [settings, setSettings] = useState<NotificationSettings>({ enabled: true, soundEnabled: false, showUpdates: true });
@@ -33,6 +33,13 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const [activeToast, setActiveToast] = useState<Notification | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const initializedRef = useRef(false);
+
+  // Derived: unread count is always computed from the source of truth
+  // (the notifications array) so it can never drift out of sync.
+  const unreadCount = useMemo(
+    () => notifications.filter(n => !n.read).length,
+    [notifications]
+  );
 
   const dismissToast = useCallback(() => {
     if (toastTimerRef.current) {
@@ -68,15 +75,20 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   }, [settings]);
 
   const handleNotification = useCallback((notification: Notification) => {
-    setNotifications(prev => [notification, ...prev]);
-    setUnreadCount(prev => prev + 1);
+    // Prepend the new notification. Using mergeNotifications with a
+    // single-element array deduplicates in case the same notification
+    // arrives twice (e.g. WS + REST race).
+    setNotifications(prev => mergeNotifications([notification], prev));
     setTotalCount(prev => prev + 1);
     showToast(notification);
   }, [showToast]);
 
   const handleHistoryUpdate = useCallback((data: NotificationListResponse) => {
-    setNotifications(data.notifications);
-    setUnreadCount(data.unreadCount);
+    // MERGE instead of replace: server data overlays local state, but
+    // local-only notifications (received via WS but not yet in a
+    // server history response) are preserved so they never "flash"
+    // and disappear.
+    setNotifications(prev => mergeNotifications(prev, data.notifications));
     setTotalCount(data.total);
     setIsLoading(false);
   }, []);
@@ -99,10 +111,12 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
     wsService.connect();
 
+    // Also fetch history via REST — this is the authoritative source
+    // and survives even if the WS handshake is slow. Merged with WS
+    // notifications so nothing is lost.
     api.getNotifications({ limit: 50 })
       .then(data => {
-        setNotifications(data.notifications);
-        setUnreadCount(data.unreadCount);
+        setNotifications(prev => mergeNotifications(prev, data.notifications));
         setTotalCount(data.total);
         setIsLoading(false);
       })
@@ -116,13 +130,13 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   }, [handleNotification, handleHistoryUpdate, handleConnectionChange]);
 
   const markAsRead = useCallback(async (id: string) => {
+    // Optimistic local update first.
+    setNotifications(prev =>
+      prev.map(n => (n.id === id ? { ...n, read: true } : n))
+    );
+
     try {
       await api.markNotificationRead(id);
-      setNotifications(prev =>
-        prev.map(n => (n.id === id ? { ...n, read: true } : n))
-      );
-      setUnreadCount(prev => Math.max(0, prev - 1));
-
       const ws = getWebSocketService();
       ws.markAsRead(id);
     } catch (e) {
@@ -131,13 +145,10 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const markAllAsRead = useCallback(async () => {
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+
     try {
       await api.markAllNotificationsRead();
-      setNotifications(prev =>
-        prev.map(n => ({ ...n, read: true }))
-      );
-      setUnreadCount(0);
-
       const ws = getWebSocketService();
       ws.markAllAsRead();
     } catch (e) {
@@ -146,25 +157,22 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const deleteNotification = useCallback(async (id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+    setTotalCount(prev => Math.max(0, prev - 1));
+
     try {
       await api.deleteNotification(id);
-      setNotifications(prev => prev.filter(n => n.id !== id));
-      setTotalCount(prev => Math.max(0, prev - 1));
-      setUnreadCount(prev => {
-        const notif = notifications.find(n => n.id === id);
-        return notif && !notif.read ? Math.max(0, prev - 1) : prev;
-      });
     } catch (e) {
       console.error('Failed to delete notification:', e);
     }
-  }, [notifications]);
+  }, []);
 
   const clearAll = useCallback(async () => {
+    setNotifications([]);
+    setTotalCount(0);
+
     try {
       await api.clearAllNotifications();
-      setNotifications([]);
-      setTotalCount(0);
-      setUnreadCount(0);
     } catch (e) {
       console.error('Failed to clear notifications:', e);
     }
@@ -181,9 +189,9 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const loadMore = useCallback(async (limit: number = 50) => {
     try {
       const data = await api.getNotifications({ limit, offset: notifications.length });
-      setNotifications(prev => [...prev, ...data.notifications]);
+      // Append with dedup instead of raw spread.
+      setNotifications(prev => appendUnique(prev, data.notifications));
       setTotalCount(data.total);
-      setUnreadCount(data.unreadCount);
     } catch (e) {
       console.error('Failed to load more notifications:', e);
     }
@@ -193,8 +201,9 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     try {
       await api.forceCheckUpdates();
       const data = await api.getNotifications({ limit: 50 });
-      setNotifications(data.notifications);
-      setUnreadCount(data.unreadCount);
+      // Merge — newly created notifications may have arrived via WS
+      // during the check; don't clobber them.
+      setNotifications(prev => mergeNotifications(prev, data.notifications));
       setTotalCount(data.total);
     } catch (e) {
       console.error('Failed to force check:', e);
