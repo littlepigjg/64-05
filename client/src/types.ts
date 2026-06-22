@@ -67,3 +67,42 @@ export interface HealthInfo {
     privateScopes: string[];
   };
 }
+
+export type NotificationType = 'package_update';
+
+export interface PackageUpdateData {
+  packageName: string;
+  registry: RegistryType;
+  oldVersion: string;
+  newVersion: string;
+  description?: string;
+}
+
+export interface Notification {
+  id: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  data: PackageUpdateData;
+  read: boolean;
+  createdAt: number;
+}
+
+export interface NotificationListResponse {
+  notifications: Notification[];
+  total: number;
+  unreadCount: number;
+}
+
+export interface NotificationSettings {
+  enabled: boolean;
+  soundEnabled: boolean;
+  showUpdates: boolean;
+}
+
+export type WSMessageType = 'notification' | 'ping' | 'pong' | 'history' | 'mark_read' | 'settings' | 'history_response' | 'settings_update';
+
+export interface WSMessage {
+  type: WSMessageType;
+  payload?: any;
+}

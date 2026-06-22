@@ -7,6 +7,9 @@ import type {
   HealthInfo,
   RegistryType,
   PackageSource,
+  Notification,
+  NotificationListResponse,
+  NotificationSettings,
 } from './types';
 
 const API_BASE = '/api';
@@ -89,4 +92,57 @@ export const api = {
     request<{ success: boolean; timestamp: number }>('/cache/snapshot', {
       method: 'POST',
     }),
+
+  getNotifications: (params: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
+    const query = qs.toString();
+    return request<NotificationListResponse>(`/notifications${query ? `?${query}` : ''}`);
+  },
+
+  markNotificationRead: (id: string) =>
+    request<{ success: boolean }>(`/notifications/${id}/read`, {
+      method: 'POST',
+    }),
+
+  markAllNotificationsRead: () =>
+    request<{ success: boolean; count: number }>('/notifications/read-all', {
+      method: 'POST',
+    }),
+
+  deleteNotification: (id: string) =>
+    request<{ success: boolean }>(`/notifications/${id}`, {
+      method: 'DELETE',
+    }),
+
+  clearAllNotifications: () =>
+    request<{ success: boolean; count: number }>('/notifications', {
+      method: 'DELETE',
+    }),
+
+  forceCheckUpdates: () =>
+    request<{ success: boolean; updates: Array<{ packageName: string; registry: RegistryType; oldVersion: string; newVersion: string }> }>('/notifications/force-check', {
+      method: 'POST',
+    }),
+
+  getNotificationSettings: (): NotificationSettings => {
+    const stored = localStorage.getItem('notificationSettings');
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch {
+        // fall through
+      }
+    }
+    return {
+      enabled: true,
+      soundEnabled: false,
+      showUpdates: true,
+    };
+  },
+
+  saveNotificationSettings: (settings: NotificationSettings): void => {
+    localStorage.setItem('notificationSettings', JSON.stringify(settings));
+  },
 };

@@ -1,14 +1,19 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import http from 'http';
 import { config } from './config';
 import { npmRouter, pypiRouter } from './modules/proxy';
 import { privatePkgRouter } from './modules/private-pkg';
 import { getMetadataIndex } from './modules/metadata';
 import { getCacheStorage } from './modules/cache';
+import { getWebSocketServer } from './modules/websocket';
+import { getNotificationManager } from './modules/notifications';
+import { getVersionChecker } from './modules/version-check';
 import { ensureDir } from './utils';
 
 const app = express();
+const server = http.createServer(app);
 
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
@@ -39,6 +44,44 @@ app.get('/api/health', (_req, res) => {
       privateScopes: config.npm.privateScopes,
     },
   });
+});
+
+app.get('/api/notifications', (req, res) => {
+  const notificationManager = getNotificationManager();
+  const limit = parseInt(req.query.limit as string) || 50;
+  const offset = parseInt(req.query.offset as string) || 0;
+  const result = notificationManager.getNotifications(limit, offset);
+  res.json(result);
+});
+
+app.post('/api/notifications/:id/read', (req, res) => {
+  const notificationManager = getNotificationManager();
+  const success = notificationManager.markAsRead(req.params.id);
+  res.json({ success });
+});
+
+app.post('/api/notifications/read-all', (_req, res) => {
+  const notificationManager = getNotificationManager();
+  const count = notificationManager.markAllAsRead();
+  res.json({ success: true, count });
+});
+
+app.delete('/api/notifications/:id', (req, res) => {
+  const notificationManager = getNotificationManager();
+  const success = notificationManager.deleteNotification(req.params.id);
+  res.json({ success });
+});
+
+app.delete('/api/notifications', (_req, res) => {
+  const notificationManager = getNotificationManager();
+  const count = notificationManager.clearAll();
+  res.json({ success: true, count });
+});
+
+app.post('/api/notifications/force-check', async (_req, res) => {
+  const versionChecker = getVersionChecker();
+  const results = await versionChecker.forceCheck();
+  res.json({ success: true, updates: results });
 });
 
 app.get('*', (_req, res) => {
@@ -80,7 +123,14 @@ setTimeout(() => {
   }
 }, 5000);
 
-app.listen(config.port, () => {
+const wsServer = getWebSocketServer();
+wsServer.attachTo(server);
+
+const notificationManager = getNotificationManager();
+const versionChecker = getVersionChecker();
+versionChecker.start();
+
+server.listen(config.port, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════╗
 ║     Local Registry Proxy v1.0.0                          ║
@@ -94,6 +144,8 @@ app.listen(config.port, () => {
 ║  🐍 PyPI Index:   http://localhost:${config.port}/pypi/simple/         ║
 ║     pip install -i http://localhost:${config.port}/pypi/simple/ ...    ║
 ║                                                          ║
+║  🔌 WebSocket:    ws://localhost:${config.port}/ws/notifications      ║
+║                                                          ║
 ║  🔒 Private Scopes: ${config.npm.privateScopes.join(', ').padEnd(30)} ║
 ║                                                          ║
 ║  💾 Storage:      ${config.storageDir.padEnd(42)}║
@@ -104,10 +156,16 @@ app.listen(config.port, () => {
 
 process.on('SIGTERM', () => {
   metadata.close();
+  notificationManager.close();
+  wsServer.close();
+  versionChecker.stop();
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   metadata.close();
+  notificationManager.close();
+  wsServer.close();
+  versionChecker.stop();
   process.exit(0);
 });
